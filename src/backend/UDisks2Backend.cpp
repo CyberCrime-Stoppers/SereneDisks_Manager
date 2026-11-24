@@ -29,6 +29,10 @@ namespace {
 // struct for the whole reply).
 using PropertyMap = QMap<QString, QVariant>;
 using InterfaceMap = QMap<QString, PropertyMap>;
+// a{oa{sa{sv}}} as a plain Qt type: object path -> interface map.
+using ObjectTree = QMap<QString, InterfaceMap>;
+
+Q_DECLARE_METATYPE(ObjectTree)
 
 // a{oa{sa{sv}}} -> map keyed by object-path string.
 ObjectTree extractManagedObjects(const QDBusArgument &arg)
@@ -127,8 +131,9 @@ void UDisks2Backend::onGetManagedObjectsFinished(QDBusPendingCallWatcher *watche
         return;
     }
 
-    // reply.value() yields a QDBusArgument positioned at the outer map.
-    const QDBusArgument raw = reply.value();
+    // argumentAt<0>() hands back the raw QDBusArgument without demarshalling;
+    // reply.value() would run qdbus_cast<QDBusArgument>, which has no operator>>.
+    const QDBusArgument raw = reply.argumentAt<0>();
     const ObjectTree managed = extractManagedObjects(raw);
 
     QMap<QString, DiskInfo> byDrive; // key: /org/freedesktop/udisks2/drives/...
