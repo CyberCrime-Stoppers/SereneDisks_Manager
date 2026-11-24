@@ -21,25 +21,33 @@ static const auto kIfaceBlock = QStringLiteral("org.freedesktop.UDisks2.Block");
 static const auto kIfacePart  = QStringLiteral("org.freedesktop.UDisks2.Partition");
 static const auto kIfaceFs    = QStringLiteral("org.freedesktop.UDisks2.Filesystem");
 
-// GetManagedObjects returns a{oa{sa{sv}}} — a map of object path ->
-// (interface -> property -> value). QDBusArgument walks it manually.
-using ObjectTree = QMap<QString, QMap<QString, QVariantMap>>;
+namespace {
 
-static ObjectTree extractManagedObjects(const QDBusArgument &arg)
+// GetManagedObjects returns a{oa{sa{sv}}}: object path -> interface map ->
+// property map. Demarshal it manually from the raw QDBusArgument so the
+// pending-reply type stays QDBusArgument (Qt has no built-in equivalent
+// struct for the whole reply).
+using PropertyMap = QMap<QString, QVariant>;
+using InterfaceMap = QMap<QString, PropertyMap>;
+
+// a{oa{sa{sv}}} -> map keyed by object-path string.
+ObjectTree extractManagedObjects(const QDBusArgument &arg)
 {
     ObjectTree out;
     arg.beginMap();
     while (!arg.atEnd()) {
-        QString objPath;
-        QMap<QString, QVariantMap> ifaces;
+        QDBusObjectPath opath;
+        InterfaceMap ifaces;
         arg.beginMapEntry();
-        arg >> objPath >> ifaces;
+        arg >> opath >> ifaces;
         arg.endMapEntry();
-        out.insert(objPath, ifaces);
+        out.insert(opath.path(), ifaces);
     }
     arg.endMap();
     return out;
 }
+
+} // anonymous namespace
 
 UDisks2Backend::UDisks2Backend(QObject *parent)
     : StorageBackend(parent)
@@ -111,15 +119,18 @@ void UDisks2Backend::onGetManagedObjectsFinished(QDBusPendingCallWatcher *watche
 {
     watcher->deleteLater();
 
+    // Take the raw argument; demarshal with the helper above.
     QDBusPendingReply<QDBusArgument> reply = *watcher;
     if (reply.isError()) {
-        qCWarning(lcSdm) << "UDisks2 GetManagedObjects failed:"
-                         << reply.error().message();
+        qCWarning(lcSdm) << "GetManagedObjects failed:" << reply.error().message();
         emit disksChanged();
         return;
     }
 
-    const ObjectTree managed = extractManagedObjects(reply.value());
+    // reply.value() yields a QDBusArgument positioned at the outer map.
+    const QDBusArgument raw = reply.value();
+    const ObjectTree managed = extractManagedObjects(raw);
+
     QMap<QString, DiskInfo> byDrive; // key: /org/freedesktop/udisks2/drives/...
 
     // Pass 1: drives define disk identity.
@@ -127,21 +138,25 @@ void UDisks2Backend::onGetManagedObjectsFinished(QDBusPendingCallWatcher *watche
         const QString objPath = it.key();
         if (!objPath.contains(QLatin1String("/drives/")))
             continue;
-        const QVariantMap driveProps = it.value().value(kIfaceDrive);
+        const PropertyMap driveProps = it.value().value(kIfaceDrive);
         if (driveProps.isEmpty())
             continue;
 
         DiskInfo d;
-        d.path       = objPath;
-        d.model      = driveProps.value(QStringLiteral("Model")).toString();
-        d.vendor     = driveProps.value(QStringLiteral("Vendor")).toString();
-        d.serial     = driveProps.value(QStringLiteral("Serial")).toString();
-        d.wwn        = driveProps.value(QStringLiteral("WWN")).toString();
-        d.sizeBytes  = driveProps.value(QStringLiteral("Size")).toULongLong();
-        d.removable  = driveProps.value(QStringLiteral("Removable")).toBool();
+        d.path        = objPath;
+        d.model       = driveProps.value(QStringLiteral("Model")).toString();
+        d.vendor      = driveProps.value(QStringLiteral("Vendor")).toString();
+        d.serial      = driveProps.value(QStringLiteral("Serial")).toString();
+        d.wwn         = driveProps.value(QStringLiteral("WWN")).toString();
+        d.sizeBytes   = driveProps.value(QStringLiteral("Size")).toULongLong();
+        d.removable   = driveProps.value(QStringLiteral("Removable")).toBool();
         d.readOnly    = driveProps.value(QStringLiteral("ReadOnly")).toBool();
-        d.connection = driveProps.value(QStringLiteral("ConnectionBus")).toString();
-        d.rotational = driveProps.value(QStringLiteral("RotationRate")).toInt() > 0;
+        d.connection  = driveProps.value(QStringLiteral("ConnectionBus")).toString();
+        d.rotational  = driveProps.value(QStringLiteral("RotationRate")).toInt() > 0;
+        d.partitionTable.clear();
+        d.partitions.clear();
+        d.smart.clear();
+
         if (d.rotational) {
             d.kind = d.removable ? QStringLiteral("removable")
                                  : QStringLiteral("hdd");
@@ -153,28 +168,33 @@ void UDisks2Backend::onGetManagedObjectsFinished(QDBusPendingCallWatcher *watche
 
     // Pass 2: block devices attach to their drive.
     for (auto it = managed.constBegin(); it != managed.constEnd(); ++it) {
-        const QVariantMap blockProps = it.value().value(kIfaceBlock);
+        const InterfaceMap ifaces = it.value();
+        const PropertyMap blockProps = ifaces.value(kIfaceBlock);
         if (blockProps.isEmpty())
             continue;
 
-        const QString driveRef = blockProps.value(QStringLiteral("Drive"))
-            .value<QDBusObjectPath>().path();
+        const QVariant driveVar = blockProps.value(QStringLiteral("Drive"));
+        const QString driveRef = driveVar.value<QDBusObjectPath>().path();
         if (!byDrive.contains(driveRef))
             continue; // loop devices / detached block nodes: M1 concern
 
         PartitionInfo p;
-        // "Device" is a byte-array (ay) variant holding the devnode path.
-        p.devicePath = blockProps.value(QStringLiteral("Device"))
-            .value<QByteArray>();
+        // "Device" is 'ay' (byte array) holding the devnode path.
+        const QVariant devVar = blockProps.value(QStringLiteral("Device"));
+        if (devVar.canConvert<QByteArray>())
+            p.devicePath = QString::fromUtf8(devVar.toByteArray());
+
         p.fsType  = blockProps.value(QStringLiteral("IdType")).toString();
         p.fsLabel = blockProps.value(QStringLiteral("IdLabel")).toString();
         p.uuid    = blockProps.value(QStringLiteral("IdUUID")).toString();
         p.encrypted = (p.fsType == QLatin1String("crypto_LUKS"));
 
-        const QVariantMap fsProps = it.value().value(kIfaceFs);
-        p.mounted = !fsProps.value(QStringLiteral("MountPoints")).toList().isEmpty();
+        const PropertyMap fsProps = ifaces.value(kIfaceFs);
+        const QVariantList mountPoints =
+            fsProps.value(QStringLiteral("MountPoints")).toList();
+        p.mounted = !mountPoints.isEmpty();
 
-        const QVariantMap partProps = it.value().value(kIfacePart);
+        const PropertyMap partProps = ifaces.value(kIfacePart);
         if (!partProps.isEmpty()) {
             p.number      = partProps.value(QStringLiteral("Number")).toInt();
             p.offsetBytes = partProps.value(QStringLiteral("Offset")).toULongLong();
@@ -182,7 +202,7 @@ void UDisks2Backend::onGetManagedObjectsFinished(QDBusPendingCallWatcher *watche
             p.name        = partProps.value(QStringLiteral("Name")).toString();
             byDrive[driveRef].partitions.append(p);
         } else {
-            // Whole-disk block node: its IdType describes the partition table.
+            // Whole-disk block node: its IdType describes the table type.
             byDrive[driveRef].partitionTable = p.fsType;
         }
     }
