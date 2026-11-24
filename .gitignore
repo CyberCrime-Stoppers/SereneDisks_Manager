@@ -1,0 +1,27 @@
+# Build
+build*/
+cmake-build-*/
+*.o
+*.so
+*.a
+moc_*.cpp
+qrc_*.cpp
+.qtc_runtime/
+
+# IDE
+.vscode/
+.idea/
+*.kdev4
+.kdev4/
+compile_commands.json
+.clangd/
+
+# Runtime / packaging
+flatpak-build/
+*.flatpak
+rpmbuild/
+
+# OS noise
+.DS_Store
+*.autosave
+*~
