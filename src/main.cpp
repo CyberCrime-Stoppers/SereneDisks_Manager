@@ -4,6 +4,7 @@
  */
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
+#include <QQmlContext>
 #include <QQuickStyle>
 
 #include "backend/UDisks2Backend.h"
@@ -17,9 +18,15 @@ int main(int argc, char *argv[])
 
     QQuickStyle::setStyle(QStringLiteral("Basic")); // fully themeable base
 
-    qmlRegisterType<sdm::UDisks2Backend>("SDM.Backend", 1, 0, "UDisks2Backend");
+    // One shared backend instance, exposed to QML as a context property
+    // so every page talks to the same device list and journal stream.
+    sdm::UDisks2Backend backend;
+    sdm::UDisks2Backend *devicesBackend = &backend;
 
     QQmlApplicationEngine engine;
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("devicesBackend"), devicesBackend);
+
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed,
                      &app, []() { QCoreApplication::exit(1); },
                      Qt::QueuedConnection);
