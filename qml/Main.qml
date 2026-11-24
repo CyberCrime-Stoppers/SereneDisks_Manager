@@ -1,12 +1,12 @@
 /*
  * SereneDisk Manager — Main.qml
  * Application shell: sidebar navigation + content stack.
- * Reads from the backend singleton exposed by main.cpp.
+ * The backend arrives as the "devicesBackend" context property from main.cpp.
  */
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
-import "components"
+import "pages"
 
 ApplicationWindow {
     id: root
@@ -19,10 +19,13 @@ ApplicationWindow {
 
     color: Theme.bgWindow
 
-    // Backend — instantiated at top level so pages share one instance.
-    // (To be moved into C++ context property in M1 for journal access.)
-    UDisks2Backend {
-        id: backend
+    // Instantiate both pages once; navigate by swapping the stack item.
+    DevicesPage { id: devicesPage }
+    JournalPage { id: journalPage }
+
+    function navigate(page) {
+        if (stack.currentItem === page) return
+        stack.replace(page)
     }
 
     RowLayout {
@@ -49,28 +52,25 @@ ApplicationWindow {
 
                 Repeater {
                     model: [
-                        { label: qsTr("Devices"), page: "devices" },
-                        { label: qsTr("Journal"), page: "journal" }
+                        { label: qsTr("Devices"), page: devicesPage },
+                        { label: qsTr("Journal"), page: journalPage }
                     ]
                     delegate: SidebarButton {
                         required property var modelData
                         text: modelData.label
-                        checked: stack.currentItem?.pageName === modelData.page
-                        onClicked: {
-                            while (stack.depth > 1) stack.pop()
-                            stack.replace(devicesPage)
-                        }
+                        checked: stack.currentItem === modelData.page
+                        onClicked: root.navigate(modelData.page)
                     }
                 }
 
                 Item { Layout.fillHeight: true }
 
                 Label {
-                    text: backend.available
+                    text: devicesBackend.available
                           ? qsTr("UDisks2 connected")
                           : qsTr("UDisks2 unreachable")
                     font.pixelSize: Theme.fontSmall
-                    color: backend.available ? Theme.textMuted : Theme.warning
+                    color: devicesBackend.available ? Theme.textMuted : Theme.warning
                 }
             }
         }
@@ -80,7 +80,7 @@ ApplicationWindow {
             id: stack
             Layout.fillWidth: true
             Layout.fillHeight: true
-            initialItem: DevicesPage { id: devicesPage }
+            initialItem: devicesPage
         }
     }
 
