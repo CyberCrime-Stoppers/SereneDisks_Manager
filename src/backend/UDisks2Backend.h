@@ -1,11 +1,13 @@
 #pragma once
 
 #include "StorageBackend.h"
+
+#include <QDBusPendingCallWatcher>
 #include <QLoggingCategory>
 
-Q_DECLARE_LOGGING_CATEGORY(lcSdm)
-
 class QDBusServiceWatcher;
+
+Q_DECLARE_LOGGING_CATEGORY(lcSdm)
 
 namespace sdm {
 
@@ -31,7 +33,7 @@ public:
     Q_INVOKABLE void refresh();
 
 private slots:
-    void onGetManagedObjectsFinished(class QDBusPendingCallWatcher *watcher);
+    void onGetManagedObjectsFinished(QDBusPendingCallWatcher *watcher);
 
 private:
     void startEnumeration();
