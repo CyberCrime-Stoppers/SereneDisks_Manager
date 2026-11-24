@@ -32,8 +32,6 @@ using InterfaceMap = QMap<QString, PropertyMap>;
 // a{oa{sa{sv}}} as a plain Qt type: object path -> interface map.
 using ObjectTree = QMap<QString, InterfaceMap>;
 
-Q_DECLARE_METATYPE(ObjectTree)
-
 // a{oa{sa{sv}}} -> map keyed by object-path string.
 ObjectTree extractManagedObjects(const QDBusArgument &arg)
 {
@@ -123,17 +121,25 @@ void UDisks2Backend::onGetManagedObjectsFinished(QDBusPendingCallWatcher *watche
 {
     watcher->deleteLater();
 
-    // Take the raw argument; demarshal with the helper above.
-    QDBusPendingReply<QDBusArgument> reply = *watcher;
-    if (reply.isError()) {
-        qCWarning(lcSdm) << "GetManagedObjects failed:" << reply.error().message();
+    // Never go through a typed QDBusPendingReply<T>: both value() and
+    // argumentAt<0>() run qdbus_cast<T>, and qdbus_cast<QDBusArgument> is
+    // impossible (no operator>> into another QDBusArgument). Instead pull
+    // the finished message and lift the raw QDBusArgument out of the reply
+    // argument's QVariant — the container still holds it as-is.
+    const QDBusMessage msg = watcher->reply();
+    if (msg.type() == QDBusMessage::ErrorMessage) {
+        qCWarning(lcSdm) << "GetManagedObjects failed:" << msg.errorMessage();
+        emit disksChanged();
+        return;
+    }
+    if (msg.arguments().isEmpty()) {
+        qCWarning(lcSdm) << "GetManagedObjects returned no arguments";
         emit disksChanged();
         return;
     }
 
-    // argumentAt<0>() hands back the raw QDBusArgument without demarshalling;
-    // reply.value() would run qdbus_cast<QDBusArgument>, which has no operator>>.
-    const QDBusArgument raw = reply.argumentAt<0>();
+    const QVariant first = msg.arguments().constFirst();
+    const QDBusArgument raw = first.value<QDBusArgument>();
     const ObjectTree managed = extractManagedObjects(raw);
 
     QMap<QString, DiskInfo> byDrive; // key: /org/freedesktop/udisks2/drives/...
