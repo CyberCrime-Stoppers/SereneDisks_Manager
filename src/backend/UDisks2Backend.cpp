@@ -171,6 +171,8 @@ QVariantList UDisks2Backend::diskList() const
             pm[QStringLiteral("mounted")]     = p.mounted;
             pm[QStringLiteral("offsetBytes")] = qlonglong(p.offsetBytes);
             pm[QStringLiteral("sizeBytes")]   = qlonglong(p.sizeBytes);
+            // Needed by the operations popup to pick HDD defrag vs SSD TRIM.
+            pm[QStringLiteral("rotational")]  = d.rotational;
             partDetails.append(pm);
             allocated += qlonglong(p.sizeBytes);
         }
