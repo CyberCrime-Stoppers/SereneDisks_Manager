@@ -4,6 +4,8 @@
  * Plain Rectangle composition — calm, flat, no default-control quirks.
  */
 import QtQuick
+import QtQuick.Controls.Basic
+import SDM
 
 Rectangle {
     id: root
