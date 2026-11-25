@@ -6,6 +6,7 @@
 #include <QLoggingCategory>
 
 class QDBusServiceWatcher;
+class QTimer;
 
 Q_DECLARE_LOGGING_CATEGORY(lcSdm)
 
@@ -34,12 +35,14 @@ public:
 
 private slots:
     void onGetManagedObjectsFinished(QDBusPendingCallWatcher *watcher);
+    void onDbusChange(); // debounced reaction to UDisks2 signal activity
 
 private:
     void startEnumeration();
 
     QList<DiskInfo> m_disks;
     QDBusServiceWatcher *m_watcher = nullptr;
+    QTimer *m_debounce = nullptr; // coalesces signal bursts into one refresh
 };
 
 } // namespace sdm
