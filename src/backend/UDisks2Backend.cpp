@@ -8,13 +8,19 @@
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
 #include <QDBusServiceWatcher>
+#include <QTimer>
+
+#include <algorithm>
 
 Q_LOGGING_CATEGORY(lcSdm, "sdm.backend")
 
 namespace sdm {
 
 static const auto kService   = QStringLiteral("org.freedesktop.UDisks2");
-static const auto kBasePath  = QStringLiteral("/org/freedesktop/udisks2");
+// NOTE: the *service* is org.freedesktop.UDisks2, but the *object path* is
+// /org/freedesktop/UDisks2 — D-Bus paths are case-sensitive, and the
+// lowercase variant does not exist.
+static const auto kBasePath  = QStringLiteral("/org/freedesktop/UDisks2");
 static const auto kIfaceOM   = QStringLiteral("org.freedesktop.DBus.ObjectManager");
 static const auto kIfaceDrive = QStringLiteral("org.freedesktop.UDisks2.Drive");
 static const auto kIfaceBlock = QStringLiteral("org.freedesktop.UDisks2.Block");
@@ -59,7 +65,37 @@ UDisks2Backend::UDisks2Backend(QObject *parent)
         QDBusServiceWatcher::WatchForOwnerChange, this);
     connect(m_watcher, &QDBusServiceWatcher::serviceOwnerChanged,
             this, &UDisks2Backend::refresh);
+
+    // Live updates: coalesce UDisks2 signal storms into one debounced
+    // re-enumeration. Mount/unmount fires PropertiesChanged; plug/unplug
+    // and partitioning fire InterfacesAdded/Removed; heavy operations
+    // (format, LUKS lock/unlock) fire several in quick succession.
+    m_debounce = new QTimer(this);
+    m_debounce->setSingleShot(true);
+    m_debounce->setInterval(150);
+    connect(m_debounce, &QTimer::timeout, this, &UDisks2Backend::startEnumeration);
+
+    QDBusConnection bus = QDBusConnection::systemBus();
+    bus.connect(kService, kBasePath, kIfaceOM,
+                QStringLiteral("InterfacesAdded"),
+                this, SLOT(onDbusChange()));
+    bus.connect(kService, kBasePath, kIfaceOM,
+                QStringLiteral("InterfacesRemoved"),
+                this, SLOT(onDbusChange()));
+    // PropertiesChanged is emitted per-object by the standard Properties
+    // interface, not by ObjectManager; the trailing-slash path match
+    // catches every /org/freedesktop/UDisks2/** object at once.
+    bus.connect(kService, kBasePath + QStringLiteral("/"),
+                QStringLiteral("org.freedesktop.DBus.Properties"),
+                QStringLiteral("PropertiesChanged"),
+                this, SLOT(onDbusChange()));
+
     refresh();
+}
+
+void UDisks2Backend::onDbusChange()
+{
+    m_debounce->start();
 }
 
 bool UDisks2Backend::isAvailable() const
@@ -85,6 +121,35 @@ QVariantList UDisks2Backend::diskList() const
         vm[QStringLiteral("readOnly")]   = d.readOnly;
         vm[QStringLiteral("table")]      = d.partitionTable;
         vm[QStringLiteral("partitions")] = int(d.partitions.size());
+
+        // Full partition detail for the M1 detail pane. Sorted by on-disk
+        // offset so rows read in physical layout order, not path-string
+        // order (nvme0n1p10 would otherwise sort before nvme0n1p2).
+        QList<PartitionInfo> ordered = d.partitions;
+        std::sort(ordered.begin(), ordered.end(),
+                  [](const PartitionInfo &a, const PartitionInfo &b) {
+                      return a.offsetBytes < b.offsetBytes;
+                  });
+        QVariantList partDetails;
+        qlonglong allocated = 0;
+        for (const PartitionInfo &p : std::as_const(ordered)) {
+            QVariantMap pm;
+            pm[QStringLiteral("devicePath")]  = p.devicePath;
+            pm[QStringLiteral("number")]      = p.number;
+            pm[QStringLiteral("name")]        = p.name;
+            pm[QStringLiteral("fsType")]      = p.fsType;
+            pm[QStringLiteral("fsLabel")]     = p.fsLabel;
+            pm[QStringLiteral("uuid")]        = p.uuid;
+            pm[QStringLiteral("encrypted")]   = p.encrypted;
+            pm[QStringLiteral("mounted")]     = p.mounted;
+            pm[QStringLiteral("offsetBytes")] = qlonglong(p.offsetBytes);
+            pm[QStringLiteral("sizeBytes")]   = qlonglong(p.sizeBytes);
+            partDetails.append(pm);
+            allocated += qlonglong(p.sizeBytes);
+        }
+        vm[QStringLiteral("partitionDetails")] = partDetails;
+        vm[QStringLiteral("allocatedBytes")]   = allocated;
+
         out.append(vm);
     }
     return out;
@@ -99,7 +164,8 @@ DiskInfo UDisks2Backend::disk(const QString &path) const
 
 void UDisks2Backend::refresh()
 {
-    m_disks.clear();
+    // Keep the current list until fresh data lands — clearing here would
+    // blank the UI between the refresh and the GetManagedObjects reply.
     startEnumeration();
 }
 
@@ -142,7 +208,7 @@ void UDisks2Backend::onGetManagedObjectsFinished(QDBusPendingCallWatcher *watche
     const QDBusArgument raw = first.value<QDBusArgument>();
     const ObjectTree managed = extractManagedObjects(raw);
 
-    QMap<QString, DiskInfo> byDrive; // key: /org/freedesktop/udisks2/drives/...
+    QMap<QString, DiskInfo> byDrive; // key: /org/freedesktop/UDisks2/drives/...
 
     // Pass 1: drives define disk identity.
     for (auto it = managed.constBegin(); it != managed.constEnd(); ++it) {
