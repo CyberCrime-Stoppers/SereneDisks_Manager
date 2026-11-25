@@ -27,6 +27,12 @@ Item {
     readonly property var  sel:           hasSelection ? selected : null
     readonly property int  partitionCount: sel ? sel.partitions : 0
     readonly property var  partitionRows:  sel ? (sel.partitionDetails ?? []) : []
+    // Smart map may be missing entirely when the backend exposed none.
+    readonly property var  smart: sel ? (sel.smart ?? {}) : {}
+    readonly property bool smartHasTemp:
+        smart && smart.temperatureC !== undefined &&
+        smart.temperatureC !== null
+    readonly property string healthVerdict: Theme.healthVerdict(smart)
     readonly property string driveTitle: sel
         ? ((sel.vendor + " " + sel.model).trim() || sel.path.split("/").pop())
         : ""
@@ -57,7 +63,11 @@ Item {
                 Button {
                     flat: true
                     text: qsTr("⟳")
-                    onClicked: devicesBackend.refresh()
+                    onClicked: {
+                        devicesBackend.refresh()
+                        journalStore.record("rescan", "",
+                                            qsTr("Manual device rescan triggered from the Devices page"))
+                    }
                     ToolTip.visible: hovered
                     ToolTip.text: qsTr("Rescan devices")
                 }
@@ -140,8 +150,73 @@ Item {
                     Layout.fillWidth: true
                 }
 
-                // Allocation overview — partition coverage of the whole
-                // disk; the gap represents unallocated space.
+                // ---- Health & temperature (built-in sensor) -------------
+                // Calm, advisory panel: a verdict pill, live temperature,
+                // power-on age, and quiet notes for anything noteworthy.
+                RowLayout {
+                    visible: root.hasSelection
+                    spacing: Theme.spaceS
+                    Layout.fillWidth: true
+
+                    StatusPill {
+                        text: root.healthVerdict === "attention"
+                              ? qsTr("Needs attention")
+                              : root.healthVerdict === "good"
+                                    ? qsTr("Healthy")
+                                    : qsTr("Health unknown")
+                        tint: root.healthVerdict === "attention"
+                              ? Theme.warning
+                              : root.healthVerdict === "good"
+                                    ? Theme.positive
+                                    : Theme.textMuted
+                        tooltip: root.healthVerdict === "good"
+                              ? qsTr("S.M.A.R.T. reports no failing attributes or critical warnings")
+                              : root.healthVerdict === "attention"
+                                    ? qsTr("The drive reports a failing condition or a critical NVMe warning")
+                                    : qsTr("No S.M.A.R.T. data available for this drive yet")
+                    }
+
+                    StatusPill {
+                        visible: root.smartHasTemp
+                        text: Theme.tempLabel(root.smart.temperatureC)
+                        tint: Theme.tempColor(root.smart.temperatureC)
+                        tooltip: qsTr("Live temperature from the drive's built-in sensor")
+                    }
+
+                    StatusPill {
+                        visible: root.smart.powerOnHours !== undefined
+                        text: qsTr("%1 h powered on")
+                                  .arg(root.smart.powerOnHours.toLocaleString(
+                                           Qt.locale(), "f", 0))
+                        tint: Theme.textSecondary
+                        tooltip: qsTr("Total power-on time reported by the drive")
+                    }
+
+                    StatusPill {
+                        visible: root.smart.badSectors !== undefined
+                        text: qsTr("%1 bad sectors")
+                                  .arg(root.smart.badSectors)
+                        tint: Theme.warning
+                        tooltip: qsTr("Remapped or pending sectors reported by S.M.A.R.T.")
+                    }
+
+                    StatusPill {
+                        visible: root.smart.criticalWarning !== undefined
+                        text: qsTr("NVMe critical warning")
+                        tint: Theme.warning
+                        tooltip: qsTr("The NVMe controller flagged a critical warning state (flags %1)")
+                                    .arg(root.smart.criticalWarning)
+                    }
+
+                    StatusPill {
+                        visible: root.smart.selfTest !== undefined
+                        text: qsTr("Self-test: %1").arg(root.smart.selfTest)
+                        tint: Theme.warning
+                        tooltip: qsTr("Last S.M.A.R.T. self-test did not finish cleanly")
+                    }
+
+                    Item { Layout.fillWidth: true }
+                }
                 ColumnLayout {
                     spacing: Theme.spaceXS
                     Layout.fillWidth: true
