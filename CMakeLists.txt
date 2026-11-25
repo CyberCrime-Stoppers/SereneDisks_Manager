@@ -32,6 +32,13 @@ target_link_libraries(SereneDiskManager PRIVATE
 # ---------------------------------------------------------------------------
 # QML module — everything reachable from one URI "SDM"
 # ---------------------------------------------------------------------------
+# Singleton-ness must be declared BEFORE qt_add_qml_module consumes the
+# files: it emits "singleton Theme Theme.qml" into the generated qmldir.
+# (pragma Singleton alone in the file does NOT register it.)
+set_source_files_properties(qml/Theme.qml PROPERTIES
+    QT_QML_SINGLETON_TYPE TRUE
+)
+
 qt_add_qml_module(SereneDiskManager
     URI SDM
     VERSION 1.0
@@ -42,14 +49,6 @@ qt_add_qml_module(SereneDiskManager
         qml/pages/JournalPage.qml
         qml/components/DeviceCard.qml
         qml/components/UsageBar.qml
-)
-
-# Theme must be a singleton: qt_add_qml_module generates the qmldir from
-# the QML_FILES, but singleton-ness must be declared via qmldir in the
-# same directory. We ship a .qmldir next to Theme.qml and let the module
-# generator pick it up.
-set_source_files_properties(qml/Theme.qml PROPERTIES
-    QT_QML_SINGLETON_TYPE TRUE
 )
 
 # ---------------------------------------------------------------------------
