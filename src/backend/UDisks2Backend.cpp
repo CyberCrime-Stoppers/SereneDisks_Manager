@@ -26,6 +26,11 @@ static const auto kIfaceDrive = QStringLiteral("org.freedesktop.UDisks2.Drive");
 static const auto kIfaceBlock = QStringLiteral("org.freedesktop.UDisks2.Block");
 static const auto kIfacePart  = QStringLiteral("org.freedesktop.UDisks2.Partition");
 static const auto kIfaceFs    = QStringLiteral("org.freedesktop.UDisks2.Filesystem");
+// Health/thermal interfaces: SATA/PATA drives implement Drive.Ata; NVMe
+// controllers implement NVMe.Controller. Both expose Smart* properties
+// (temperatures in Kelvin) gated behind SmartUpdated > 0.
+static const auto kIfaceAta   = QStringLiteral("org.freedesktop.UDisks2.Drive.Ata");
+static const auto kIfaceNVMeC = QStringLiteral("org.freedesktop.UDisks2.NVMe.Controller");
 
 namespace {
 
@@ -53,6 +58,23 @@ ObjectTree extractManagedObjects(const QDBusArgument &arg)
     }
     arg.endMap();
     return out;
+}
+
+namespace {
+
+// Kelvin (double or uint16 depending on interface) → Celsius, rounded.
+double kelvinToCelsius(const QVariant &kelvin)
+{
+    const double k = kelvin.toDouble();
+    if (k <= 0.0)
+        return 0.0;
+    return k - 273.15;
+}
+
+// One Kelvin degree: skip reporting absurd readings (< -60°C or > 200°C).
+bool plausibleCelsius(double c)
+{
+    return c > -60.0 && c < 200.0;
 }
 
 } // anonymous namespace
@@ -121,6 +143,11 @@ QVariantList UDisks2Backend::diskList() const
         vm[QStringLiteral("readOnly")]   = d.readOnly;
         vm[QStringLiteral("table")]      = d.partitionTable;
         vm[QStringLiteral("partitions")] = int(d.partitions.size());
+        // Thermal/health summary (empty when no sensor reported a value).
+        if (!d.smart.isEmpty())
+            vm[QStringLiteral("smart")] = d.smart;
+        else
+            vm[QStringLiteral("smart")] = QVariantMap();
 
         // Full partition detail for the M1 detail pane. Sorted by on-disk
         // offset so rows read in physical layout order, not path-string
@@ -183,6 +210,20 @@ void UDisks2Backend::startEnumeration()
             this, &UDisks2Backend::onGetManagedObjectsFinished);
 }
 
+void UDisks2Backend::pollSmartData(const QString &objPath, const QString &iface)
+{
+    // UDisks2 is lazy: the Smart* properties (temperature included) stay
+    // empty until SOMETHING calls SmartUpdate() on the drive — GNOME Disks
+    // does this on launch. Fire the call and let the PropertiesChanged
+    // it provokes flow back through the normal debounced re-enumeration.
+    // Fire-and-forget: a rejection (unsupported transport, polkit) just
+    // means "no sensor data", which the UI already treats calmly.
+    QDBusMessage call = QDBusMessage::createMethodCall(
+        kService, objPath, iface, QStringLiteral("SmartUpdate"));
+    call << QVariantMap();
+    QDBusConnection::systemBus().asyncCall(call);
+}
+
 void UDisks2Backend::onGetManagedObjectsFinished(QDBusPendingCallWatcher *watcher)
 {
     watcher->deleteLater();
@@ -210,13 +251,22 @@ void UDisks2Backend::onGetManagedObjectsFinished(QDBusPendingCallWatcher *watche
 
     QMap<QString, DiskInfo> byDrive; // key: /org/freedesktop/UDisks2/drives/...
 
-    // Pass 1: drives define disk identity.
+    // Pass 1: drives (and NVMe controllers) define disk identity.
     for (auto it = managed.constBegin(); it != managed.constEnd(); ++it) {
         const QString objPath = it.key();
-        if (!objPath.contains(QLatin1String("/drives/")))
+        const bool isDrive = objPath.contains(QLatin1String("/drives/"));
+        const bool isNvmeController =
+            objPath.contains(QLatin1String("/nvme/"));
+        if (!isDrive && !isNvmeController)
             continue;
         const PropertyMap driveProps = it.value().value(kIfaceDrive);
-        if (driveProps.isEmpty())
+        // NVMe namespaces chain to their controller's Drive object; only
+        // export the controller itself so each disk appears exactly once.
+        const bool hasControllerIface =
+            it.value().contains(kIfaceNVMeC);
+        if (isNvmeController && !hasControllerIface)
+            continue;
+        if (driveProps.isEmpty() && !isNvmeController)
             continue;
 
         DiskInfo d;
@@ -233,6 +283,89 @@ void UDisks2Backend::onGetManagedObjectsFinished(QDBusPendingCallWatcher *watche
         d.partitionTable.clear();
         d.partitions.clear();
         d.smart.clear();
+
+        // ---- Built-in temperature & health sensor ----------------------
+        // Drive.Ata (SATA/PATA) and NVMe.Controller both expose Smart*
+        // properties, Kelvin temperatures, and a SmartUpdated gate: values
+        // are only meaningful after UDisks2 has refreshed its cache (which
+        // it does periodically once enabled). We publish whatever has a
+        // plausible reading and leave the rest to the UI's calm defaults.
+        const PropertyMap ataProps = it.value().value(kIfaceAta);
+        const PropertyMap nvmeProps = it.value().value(kIfaceNVMeC);
+
+        QVariantMap s;
+        double tempC = 0.0;
+        bool tempKnown = false;
+
+        if (!ataProps.isEmpty()) {
+            const qlonglong ataUpdated =
+                ataProps.value(QStringLiteral("SmartUpdated")).toLongLong();
+            if (ataUpdated > 0) {
+                const double t = kelvinToCelsius(
+                    ataProps.value(QStringLiteral("SmartTemperature")));
+                if (plausibleCelsius(t)) {
+                    tempC = t;
+                    tempKnown = true;
+                }
+                s[QStringLiteral("failing")] =
+                    ataProps.value(QStringLiteral("SmartFailing")).toBool();
+                const quint64 secs = ataProps.value(
+                    QStringLiteral("SmartPowerOnSeconds")).toULongLong();
+                if (secs > 0)
+                    s[QStringLiteral("powerOnHours")] =
+                        qlonglong(secs / 3600);
+                const quint64 bad = ataProps.value(
+                    QStringLiteral("SmartNumBadSectors")).toULongLong();
+                if (bad > 0)
+                    s[QStringLiteral("badSectors")] = qlonglong(bad);
+                const QString selfTest = ataProps.value(
+                    QStringLiteral("SmartSelftestStatus")).toString();
+                if (!selfTest.isEmpty() && selfTest != QLatin1String("success"))
+                    s[QStringLiteral("selfTest")] = selfTest;
+            }
+        } else if (!nvmeProps.isEmpty()) {
+            const qlonglong nvmeUpdated =
+                nvmeProps.value(QStringLiteral("SmartUpdated")).toLongLong();
+            if (nvmeUpdated > 0) {
+                const double t = kelvinToCelsius(
+                    nvmeProps.value(QStringLiteral("SmartTemperature")));
+                if (plausibleCelsius(t)) {
+                    tempC = t;
+                    tempKnown = true;
+                }
+                const quint64 hours = nvmeProps.value(
+                    QStringLiteral("SmartPowerOnHours")).toULongLong();
+                if (hours > 0)
+                    s[QStringLiteral("powerOnHours")] = qlonglong(hours);
+                const quint32 critWarn = nvmeProps.value(
+                    QStringLiteral("SmartCriticalWarning")).toUInt();
+                if (critWarn != 0)
+                    s[QStringLiteral("criticalWarning")] = critWarn;
+            }
+        }
+
+        if (tempKnown) {
+            s[QStringLiteral("temperatureC")] = qRound(tempC * 10) / 10.0;
+        } else {
+            s[QStringLiteral("temperatureC")] = QVariant();
+        }
+        s[QStringLiteral("sensor")] = tempKnown
+            ? (ataProps.isEmpty() ? QStringLiteral("nvme")
+                                  : QStringLiteral("ata"))
+            : QString();
+        if (!s.isEmpty())
+            d.smart = s;
+
+        // Kick a one-shot SMART refresh so the cache (and the temperature
+        // in it) actually populates. Once per drive per session: no
+        // hammering drives that refuse or can't answer.
+        if (!m_smartPolled.contains(objPath)) {
+            m_smartPolled.insert(objPath);
+            if (!ataProps.isEmpty())
+                pollSmartData(objPath, kIfaceAta);
+            else if (!nvmeProps.isEmpty())
+                pollSmartData(objPath, kIfaceNVMeC);
+        }
 
         if (d.rotational) {
             d.kind = d.removable ? QStringLiteral("removable")
