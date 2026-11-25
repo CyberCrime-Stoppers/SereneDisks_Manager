@@ -8,6 +8,7 @@
 #include <QQuickStyle>
 
 #include "backend/UDisks2Backend.h"
+#include "JournalStore.h"
 
 int main(int argc, char *argv[])
 {
@@ -23,9 +24,15 @@ int main(int argc, char *argv[])
     sdm::UDisks2Backend backend;
     sdm::UDisks2Backend *devicesBackend = &backend;
 
+    // Append-only operation audit trail. Lives for the whole session;
+    // persists across runs under AppDataLocation.
+    sdm::JournalStore journalStore;
+
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(
         QStringLiteral("devicesBackend"), devicesBackend);
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("journalStore"), &journalStore);
 
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed,
                      &app, []() { QCoreApplication::exit(1); },
