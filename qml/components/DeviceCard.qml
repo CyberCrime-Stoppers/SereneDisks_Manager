@@ -7,6 +7,8 @@ import QtQuick.Layouts
 import QtQuick.Controls.Basic
 import SDM
 
+// StatusPill resolves as a same-directory sibling type.
+
 Rectangle {
     id: root
 
@@ -85,6 +87,19 @@ Rectangle {
                     font.pixelSize: Theme.fontTiny
                     color: Theme.positive
                 }
+            }
+
+            // Built-in temperature sensor chip — only when the drive
+            // reports a reading. Sensor source in the tooltip.
+            StatusPill {
+                visible: disk.smart &&
+                         disk.smart.temperatureC !== undefined &&
+                         disk.smart.temperatureC !== null
+                text: Theme.tempLabel(disk.smart.temperatureC)
+                tint: Theme.tempColor(disk.smart.temperatureC)
+                tooltip: disk.smart.sensor === "nvme"
+                         ? qsTr("Reported by the NVMe controller")
+                         : qsTr("Reported by the drive (S.M.A.R.T.)")
             }
         }
     }
