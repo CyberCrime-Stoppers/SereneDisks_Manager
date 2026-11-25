@@ -157,9 +157,17 @@ Item {
                         font.pixelSize: Theme.fontTiny
                         color: Theme.textSecondary
                     }
-                    UsageBar {
+                    // On-disk layout map: segments at true offsets, gaps
+                    // between them read as unallocated space.
+                    Label {
+                        text: qsTr("On-disk layout")
+                        font.pixelSize: Theme.fontTiny
+                        color: Theme.textSecondary
+                    }
+                    PartitionMap {
                         Layout.fillWidth: true
-                        fraction: root.allocFraction
+                        partitions: root.partitionRows
+                        totalBytes: root.sel ? root.sel.sizeBytes : 0
                     }
                 }
 
