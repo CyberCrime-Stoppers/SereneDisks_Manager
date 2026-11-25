@@ -4,6 +4,7 @@
 
 #include <QDBusPendingCallWatcher>
 #include <QLoggingCategory>
+#include <QSet>
 
 class QDBusServiceWatcher;
 class QTimer;
@@ -39,10 +40,14 @@ private slots:
 
 private:
     void startEnumeration();
+    void pollSmartData(const QString &objPath, const QString &iface);
 
     QList<DiskInfo> m_disks;
     QDBusServiceWatcher *m_watcher = nullptr;
     QTimer *m_debounce = nullptr; // coalesces signal bursts into one refresh
+    // Drive object paths we have already asked for a SMART refresh this
+    // session; prevents hammering drives that refuse or cannot answer.
+    QSet<QString> m_smartPolled;
 };
 
 } // namespace sdm
