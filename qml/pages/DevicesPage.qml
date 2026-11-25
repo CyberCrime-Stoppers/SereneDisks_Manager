@@ -39,6 +39,12 @@ Item {
     readonly property real allocFraction: (sel && sel.sizeBytes > 0)
         ? sel.allocatedBytes / sel.sizeBytes : 0
 
+    // Shared manage-operations popup: format / resize / refragment.
+    OperationsPopup {
+        id: opsPopup
+        target: null
+    }
+
     RowLayout {
         anchors.fill: parent
         anchors.margins: Theme.spaceL
@@ -243,6 +249,15 @@ Item {
                         Layout.fillWidth: true
                         partitions: root.partitionRows
                         totalBytes: root.sel ? root.sel.sizeBytes : 0
+
+                        // Click an existing segment → manage popup.
+                        onManageRequested: (partition) => opsPopup.openFor(
+                                               partition)
+
+                        // Click unallocated space → create-partition popup.
+                        onCreateRequested: (offsetBytes, sizeBytes) =>
+                            opsPopup.openCreate(root.sel, offsetBytes,
+                                                sizeBytes)
                     }
                 }
 
@@ -309,6 +324,27 @@ Item {
                                 required property var modelData
                                 width: partList.width
                                 spacing: Theme.spaceM
+
+                                // Dim highlight so rows read as clickable
+                                Rectangle {
+                                    anchors.fill: parent
+                                    anchors.margins: -Theme.spaceXS
+                                    radius: Theme.radiusS
+                                    color: rowClick.containsMouse
+                                           ? Theme.bgHover : "transparent"
+                                    z: -1
+                                }
+
+                                // Whole row is a quiet button: click anywhere
+                                // to open the manage popup for this partition.
+                                MouseArea {
+                                    id: rowClick
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    hoverEnabled: true
+                                    onClicked: opsPopup.openFor(
+                                                partRow.modelData)
+                                }
 
                                 // Partition number badge
                                 Rectangle {
