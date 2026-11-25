@@ -10,6 +10,14 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 DBus Concurrent)
 
 qt_standard_project_setup()
 
+# Opt into the newer Qt CMake policies:
+#   QTP0001 — ':/qt/qml/' default resource prefix for QML modules.
+#   QTP0004 — auto-generate qmldir files for each subdirectory that holds
+#             QML files (pages/, components/) — required for reliable
+#             composite-type resolution in compiled modules.
+qt_policy(SET QTP0001 NEW)
+qt_policy(SET QTP0004 NEW)
+
 # ---------------------------------------------------------------------------
 # Sources
 # ---------------------------------------------------------------------------
@@ -49,6 +57,7 @@ qt_add_qml_module(SereneDiskManager
         qml/pages/JournalPage.qml
         qml/components/DeviceCard.qml
         qml/components/UsageBar.qml
+        qml/components/PartitionMap.qml
 )
 
 # ---------------------------------------------------------------------------
