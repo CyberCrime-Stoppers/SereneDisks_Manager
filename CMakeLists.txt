@@ -26,6 +26,8 @@ set(SDM_SOURCES
     src/backend/StorageBackend.h
     src/backend/UDisks2Backend.h
     src/backend/UDisks2Backend.cpp
+    src/backend/Operations.h
+    src/backend/Operations.cpp
     src/JournalStore.h
     src/JournalStore.cpp
 )
@@ -61,6 +63,7 @@ qt_add_qml_module(SereneDiskManager
         qml/components/StatusPill.qml
         qml/components/UsageBar.qml
         qml/components/PartitionMap.qml
+        qml/components/OperationsPopup.qml
 )
 
 # ---------------------------------------------------------------------------
