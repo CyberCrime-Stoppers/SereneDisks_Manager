@@ -2,10 +2,14 @@
  * SereneDisk Manager — Main.qml
  * Application shell: sidebar navigation + content stack.
  * The backend arrives as the "devicesBackend" context property from main.cpp.
+ *
+ * Pages live INSIDE a StackLayout so exactly one is visible at a time.
+ * (Declaring them at window level made both render stacked at 0,0.)
  */
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
+import SDM
 import "pages"
 
 ApplicationWindow {
@@ -19,13 +23,12 @@ ApplicationWindow {
 
     color: Theme.bgWindow
 
-    // Instantiate both pages once; navigate by swapping the stack item.
-    DevicesPage { id: devicesPage }
-    JournalPage { id: journalPage }
+    // 0 = Devices, 1 = Journal
+    readonly property var pages: [qsTr("Devices"), qsTr("Journal")]
 
-    function navigate(page) {
-        if (stack.currentItem === page) return
-        stack.replace(page)
+    function navigate(index) {
+        if (stack.currentIndex === index) return
+        stack.currentIndex = index
     }
 
     RowLayout {
@@ -34,8 +37,19 @@ ApplicationWindow {
 
         // ---- Sidebar --------------------------------------------------
         Rectangle {
+            id: sidebar
             Layout.preferredWidth: 220
+            Layout.fillHeight: true
             color: Theme.bgSurface
+
+            // Subtle right edge so the sidebar reads as its own panel
+            Rectangle {
+                width: 1
+                height: parent.height
+                anchors.right: parent.right
+                color: Qt.rgba(Theme.textMuted.r, Theme.textMuted.g,
+                               Theme.textMuted.b, 0.15)
+            }
 
             ColumnLayout {
                 anchors.fill: parent
@@ -51,36 +65,40 @@ ApplicationWindow {
                 }
 
                 Repeater {
-                    model: [
-                        { label: qsTr("Devices"), page: devicesPage },
-                        { label: qsTr("Journal"), page: journalPage }
-                    ]
+                    model: root.pages
                     delegate: SidebarButton {
                         required property var modelData
-                        text: modelData.label
-                        checked: stack.currentItem === modelData.page
-                        onClicked: root.navigate(modelData.page)
+                        required property int index
+                        text: modelData
+                        checked: stack.currentIndex === index
+                        onClicked: root.navigate(index)
                     }
                 }
 
                 Item { Layout.fillHeight: true }
 
                 Label {
+                    Layout.fillWidth: true
                     text: devicesBackend.available
                           ? qsTr("UDisks2 connected")
                           : qsTr("UDisks2 unreachable")
                     font.pixelSize: Theme.fontSmall
-                    color: devicesBackend.available ? Theme.textMuted : Theme.warning
+                    wrapMode: Text.WordWrap
+                    color: devicesBackend.available
+                          ? Theme.textMuted : Theme.warning
                 }
             }
         }
 
         // ---- Content ----------------------------------------------------
-        StackView {
+        StackLayout {
             id: stack
             Layout.fillWidth: true
             Layout.fillHeight: true
-            initialItem: devicesPage
+            currentIndex: 0
+
+            DevicesPage {}
+            JournalPage {}
         }
     }
 
@@ -88,21 +106,24 @@ ApplicationWindow {
         id: ctrl
         flat: true
         font.pixelSize: Theme.fontBody
+        leftPadding: Theme.spaceM
         implicitHeight: 40
+        Layout.fillWidth: true
         background: Rectangle {
             radius: Theme.radiusS
             color: ctrl.checked ? Theme.bgHover
-                  : ctrl.hovered ? Theme.bgSurface
+                  : ctrl.hovered ? Theme.bgElevated
                                  : "transparent"
             Rectangle {
                 width: 3
                 height: parent.height * 0.6
                 radius: 2
+                anchors.left: parent.left
+                anchors.leftMargin: 2
                 anchors.verticalCenter: parent.verticalCenter
-                color: ctrl.checked ? Theme.accent : "transparent"
+                color: Theme.accent
                 visible: ctrl.checked
             }
-            anchors.centerIn: parent
         }
     }
 }
