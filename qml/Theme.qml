@@ -75,4 +75,58 @@ QtObject {
             default:          return qsTr("Disk")
         }
     }
+
+    // ---- Thermal bands (calm, advisory — never alarm-red) ---------------
+    // Thresholds follow common vendor guidance: NVMe drives run hotter by
+    // design (idle ~40 °C is normal), so the bands are generous, and any
+    // reading above 70 °C simply reads as "running hot", not "danger".
+    readonly property double tempCoolMax:  40   // ≤ this: cool & happy
+    readonly property double tempWarmMax:  55   // ≤ this: nominal
+    readonly property double tempHotMax:   70   // ≤ this: warm, worth noting
+
+    function tempBand(tempC) {
+        if (tempC === undefined || tempC === null || isNaN(tempC))
+            return "unknown"
+        if (tempC <= tempCoolMax) return "cool"
+        if (tempC <= tempWarmMax) return "nominal"
+        if (tempC <= tempHotMax)  return "warm"
+        return "hot"
+    }
+
+    function tempColor(tempC) {
+        switch (tempBand(tempC)) {
+            case "cool":    return positive
+            case "nominal": return textSecondary
+            case "warm":    return warning
+            case "hot":     return warning
+            default:        return textMuted
+        }
+    }
+
+    // Calm one-liner for a temperature band, e.g. "41 °C · warm".
+    function tempLabel(tempC) {
+        if (tempBand(tempC) === "unknown")
+            return qsTr("temp n/a")
+        return qsTr("%1 °C · %2")
+                  .arg(Math.round(tempC))
+                  .arg({
+                      "cool":    qsTr("cool"),
+                      "nominal": qsTr("nominal"),
+                      "warm":    qsTr("warm"),
+                      "hot":     qsTr("running hot")
+                  }[tempBand(tempC)])
+    }
+
+    // Overall drive health verdict from the backend's smart map:
+    // "failing" / criticalWarning wins over anything else; otherwise a
+    // real temperature reading counts as good health signal.
+    function healthVerdict(smart) {
+        if (!smart) return "unknown"
+        if (smart.failing === true || smart.criticalWarning)
+            return "attention"
+        if (smart.temperatureC !== undefined &&
+                smart.temperatureC !== null)
+            return "good"
+        return "unknown"
+    }
 }
